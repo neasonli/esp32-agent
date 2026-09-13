@@ -51,7 +51,10 @@ param(
     [string]$EspIdfTargets = 'esp32s3',
     [switch]$RebuildKernel,
     [switch]$RestageEspIdf,
-    [switch]$SkipTypecheck
+    [switch]$SkipTypecheck,
+    # Allow packaging a tree whose bundled planner cannot run (Electron too old -> slim mode).
+    # For an intentional slim-only build; otherwise the preflight fails on purpose.
+    [switch]$AllowOldElectron
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,6 +85,37 @@ if (-not (Test-Path (Join-Path $Desktop 'node_modules\electron-builder'))) {
 }
 if (-not (Test-Path $KernelVenvPy)) { Fail "kernel venv python not found: $KernelVenvPy (see lcode\kernel\README.md)" }
 Ok 'desktop deps + kernel venv present'
+
+# --- bundled planner runtime vs Electron's own Node -------------------------------------------
+# The planner bundle (resources\planner, built by tools\build-planner-bundle.ps1) is started with
+# ELECTRON_RUN_AS_NODE, so it runs on the Electron-bundled Node. DSH needs Node >= 22.19
+# (node:zlib createZstdDecompress) => Electron >= 36.9. Shipping the bundle on an older Electron
+# does not crash the app, but the planner silently never starts and chat degrades to slim mode:
+# a crippled build that looks fine. Fail here instead, unless -AllowOldElectron is passed.
+$plannerEntry = Join-Path $Desktop 'resources\planner\apps\cli\lib\bin.js'
+if (Test-Path $plannerEntry) {
+    $elExe = Join-Path $Desktop 'node_modules\electron\dist\electron.exe'
+    if (-not (Test-Path $elExe)) { Fail "electron.exe not found: $elExe (run npm install in lcode\desktop)" }
+    $elNode = (& cmd /c "set ELECTRON_RUN_AS_NODE=1&& `"$elExe`" -e `"console.log(process.versions.node)`"").Trim()
+    $elVer = (& cmd /c "`"$elExe`" --version").Trim()
+    $p = $elNode.Split('.')
+    $maj = [int]$p[0]; $min = [int]$p[1]
+    if ($maj -lt 22 -or ($maj -eq 22 -and $min -lt 19)) {
+        if (-not $AllowOldElectron) {
+            Write-Host "    [FAIL] bundled planner requires Electron >= 36.9 (bundled Node >= 22.19), but this tree has $elVer -> Node $elNode" -ForegroundColor Red
+            Write-Host "           DSH imports node:zlib createZstdDecompress, so the planner would never start and" -ForegroundColor Red
+            Write-Host "           chat would silently fall back to slim mode (no plan-mode / effort / subagents)." -ForegroundColor Red
+            Write-Host "           Fix:  cd lcode\desktop;  npm i -D electron@38.8.6   (close the running app first)" -ForegroundColor Red
+            Write-Host "           Or override for an intentional slim build:  -AllowOldElectron" -ForegroundColor Red
+            exit 1
+        }
+        Warn2 "bundled planner present but Electron $elVer -> Node $elNode is too old: chat will use slim mode (-AllowOldElectron)"
+    } else {
+        Ok "bundled planner + Electron $elVer (Node $elNode) compatible"
+    }
+} else {
+    Warn2 'no bundled planner runtime in resources\planner: the installed app will use slim mode (kernel-side chat agent)'
+}
 
 # ---------------------------------------------------------------- 2. kernel
 Step '2/6 freezing the kernel (PyInstaller)'

@@ -100,7 +100,9 @@ $env:LCORE_KERNEL_URL = 'http://127.0.0.1:1'
 $env:LCORE_KERNEL_TOKEN = 'boot-gate'
 $env:LCORE_SESSION_ROOT = Join-Path $tmp 'sessions'
 $env:LCORE_CWD = $tmp
-$env:DEEPSEEK_API_KEY = 'sk-boot-gate-0000000000000000000000'
+# Placeholder, deliberately NOT shaped like a real key: a literal "sk-..." here trips GitHub's
+# secret scanning / push protection on the public repo (measured).
+$env:DEEPSEEK_API_KEY = 'boot-gate-placeholder-not-a-key'
 $env:DEEPSEEK_BASE_URL = 'http://127.0.0.1:1'
 Remove-Item Env:LCORE_TRACE -ErrorAction SilentlyContinue
 

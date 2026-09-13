@@ -79,6 +79,12 @@ $SkipSubPaths += 'lcode\desktop\resources\kb'
 # reads a BOM-less .ps1 as ANSI and would corrupt a literal. Build the name from code points.
 $InternalDocNames = @(
   (-join [char[]]@(0x5F00, 0x6E90, 0x53D1, 0x5E03, 0x6E05, 0x5355)) + '.md'   # release checklist
+  # Private-KB delivery report (wheel hashes, the private package's module list, corpus file
+  # names, private repo paths, machine paths): an internal handover doc for the closed-source
+  # side, not public documentation. Public-facing KB positioning lives in the one-click
+  # packaging doc (section 9.1) and the kernel README's knowledge-base section.
+  (-join [char[]]@(0x79C1, 0x6709, 0x77E5, 0x8BC6, 0x5E93, 0x2D, 0x77, 0x68, 0x65, 0x65, 0x6C,
+                   0x4E0E, 0x79C1, 0x6709, 0x6E90)) + '.md'
 )
 $SkipRelFiles = @()
 foreach ($n in $InternalDocNames) { $SkipRelFiles += (Join-Path 'docs' $n) }
