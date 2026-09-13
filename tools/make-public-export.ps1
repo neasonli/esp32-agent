@@ -161,7 +161,11 @@ $findings = @()
 foreach ($s in $SkipSubPaths) {
   if (Test-Path -LiteralPath (Join-Path $Out $s)) { $findings += "PRIVATE SUBTREE LEAKED: $s" }
 }
-foreach ($f in Get-ChildItem -LiteralPath $Out -Recurse -File -Force) {
+# .git (the export dir's own repo, preserved above) is not part of the published tree:
+# exclude it from the scan and the counters, or the reported file count is inflated by git objects.
+$scanFiles = Get-ChildItem -LiteralPath $Out -Recurse -File -Force |
+  Where-Object { $_.FullName -notlike (Join-Path $Out '.git\*') }
+foreach ($f in $scanFiles) {
   $rel = $f.FullName.Substring($Out.Length).TrimStart('\')
   if (($f.Name -eq '.env' -or $f.Name -like '.env.*') -and $f.Name -ne '.env.example') { $findings += "ENV FILE: $rel" }
   foreach ($p in @('*.pem', '*.key', '*.db', '*.db-shm', '*.db-wal', '*.npy', '*.pdf')) {
@@ -178,10 +182,10 @@ foreach ($f in Get-ChildItem -LiteralPath $Out -Recurse -File -Force) {
   }
 }
 
-$files = Get-ChildItem -LiteralPath $Out -Recurse -File -Force
+$files = $scanFiles
 $sum = ($files | Measure-Object -Property Length -Sum).Sum
 Write-Host ("files: {0}   size: {1} MB" -f $files.Count, [math]::Round(($sum / 1MB), 2))
-Get-ChildItem -LiteralPath $Out -Force | Sort-Object Name | ForEach-Object {
+Get-ChildItem -LiteralPath $Out -Force | Where-Object { $_.Name -ne '.git' } | Sort-Object Name | ForEach-Object {
   $n = if ($_.PSIsContainer) { (Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue).Count } else { 1 }
   Write-Host ("  {0,-24} {1,6} files" -f $_.Name, $n)
 }
