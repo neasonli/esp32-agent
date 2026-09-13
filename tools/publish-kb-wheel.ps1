@@ -369,6 +369,18 @@ if ($mode -eq 'index') {
             $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Tag" -Headers $headers -Method Get
             Info "release $Tag already exists (id=$($rel.id))"
         } catch {
+            # Creating a release for a tag that does NOT exist on the remote can come back as
+            # HTTP 500 from the API (measured: "POST /releases -> 500" while the tag only existed
+            # locally). Push the tag first, then create the release against it.
+            $hasRemote = $false
+            try { $hasRemote = @(& git -C $KbDir remote).Count -gt 0 } catch { }
+            if ($hasRemote) {
+                Info "pushing tag $Tag before creating the release (avoids the API 500 on a missing tag) ..."
+                & git -C $KbDir push origin $Tag 2>&1 | ForEach-Object { Write-Host "      $_" }
+                if ($LASTEXITCODE -ne 0) { Warn2 "git push of tag $Tag failed -- the release may still be created by the API" }
+            } else {
+                Warn2 "no git remote in ${KbDir} - the API will have to create tag $Tag itself (may 500)"
+            }
             $body = @{
                 tag_name   = $Tag
                 name       = "lcode-kb $Version (private)"
