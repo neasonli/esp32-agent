@@ -68,6 +68,23 @@ $headers = @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+
 $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
 if (-not $curl) { Fail 'curl.exe not found (Windows 10 1803+ ships it)' }
 
+function Read-NotesText([string]$path) {
+    # Two measured traps on a Chinese-locale Windows PowerShell 5.1:
+    #   1) Get-Content -Raw without -Encoding reads a BOM-less UTF-8 file as GBK, so CJK text is
+    #      already mangled in memory before it is ever sent (the release body showed as mojibake
+    #      even though the JSON itself was valid UTF-8).
+    #   2) Invoke-RestMethod -Body <string> then encodes with the ANSI code page again.
+    # So: read raw bytes and decode as UTF-8 explicitly; send UTF-8 bytes back.
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+    # Drop a UTF-8 BOM if the file happens to have one.
+    if ($text.Length -gt 0 -and [int][char]$text[0] -eq 0xFEFF) { $text = $text.Substring(1) }
+    # Only the part after the first horizontal rule is the release body (the notes files start
+    # with a title plus a short "how to use this file" blockquote).
+    if ($text -match '(?s)^.*?\r?\n---\r?\n(.*)$') { $text = $Matches[1] }
+    return $text.Trim()
+}
+
 # ---------------------------------------------------------------- 1. artifacts
 Step '1/5 collecting artifacts'
 $files = Get-ChildItem $Dist -File -Filter '*.exe' -ErrorAction SilentlyContinue |
@@ -108,33 +125,42 @@ if ($remoteTag) {
 
 # ---------------------------------------------------------------- 3. release
 Step '3/5 ensure the release exists'
+$notesText = ''
+if ($NotesFile -and (Test-Path $NotesFile)) {
+    $notesText = Read-NotesText $NotesFile
+    Write-Host ("    notes: {0} ({1:N1} KB)" -f $NotesFile, ($notesText.Length / 1KB))
+    if ($notesText -notmatch '[^\x00-\x7F]') { Warn2 'the notes text looks pure ASCII - did the file really load as UTF-8?' }
+}
 $rel = $null
 try {
     $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Tag" -Headers $headers -Method Get
     Ok "release $Tag exists (id=$($rel.id))"
+    # Repair the body when it differs from the (correctly decoded) notes file. This is how a
+    # previously mojibake body gets fixed: re-run the script and it PATCHes the description.
+    if ($notesText -and ([string]$rel.body).Trim() -ne $notesText) {
+        Write-Host '    body differs from the notes file -> updating the description'
+        if ($DryRun) {
+            Warn2 'dry run: would PATCH the release body'
+        } else {
+            $patchJson = @{ body = $notesText } | ConvertTo-Json -Depth 5
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/$($rel.id)" -Headers $headers `
+                -Method Patch -Body ([System.Text.Encoding]::UTF8.GetBytes($patchJson)) `
+                -ContentType 'application/json; charset=utf-8'
+            Ok 'release description updated'
+        }
+    }
 } catch {
     if ($DryRun) {
         Warn2 "dry run: would create release $Tag (title '$Title')"
         $rel = [pscustomobject]@{ id = 0; assets = @() }
     } else {
         $body = @{ tag_name = $Tag; name = $Title; draft = $false; prerelease = $false }
-        if ($NotesFile -and (Test-Path $NotesFile)) {
-            $raw = Get-Content -LiteralPath $NotesFile -Raw
-            # The notes files start with a title + a short "how to use this file" blockquote.
-            # Only the part after the first horizontal rule is the actual release body.
-            if ($raw -match '(?s)^.*?\r?\n---\r?\n(.*)$') { $raw = $Matches[1] }
-            $body.body = $raw.Trim()
-            Write-Host "    notes: $NotesFile ($([math]::Round($body.body.Length/1024,1)) KB after trimming)"
-        }
-        # IMPORTANT (measured on a Chinese-locale Windows): `Invoke-RestMethod -Body <string>`
-        # encodes the payload with the system ANSI code page (GBK here), so a non-ASCII body
-        # reaches GitHub as invalid UTF-8 and the API answers
-        #   400 {"message":"Problems parsing JSON"}
-        # Sending UTF-8 *bytes* instead of a string is the fix.
+        if ($notesText) { $body.body = $notesText }
+        # Non-ASCII must be sent as UTF-8 *bytes*: a string body is encoded with the ANSI code
+        # page (GBK here) and the API answers 400 "Problems parsing JSON".
         $json = $body | ConvertTo-Json -Depth 5
-        $jsonBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
         $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases" -Headers $headers -Method Post `
-            -Body $jsonBytes -ContentType 'application/json; charset=utf-8'
+            -Body ([System.Text.Encoding]::UTF8.GetBytes($json)) -ContentType 'application/json; charset=utf-8'
         if (-not $rel.id) { Fail 'release creation returned no id' }
         Ok "created release $Tag (id=$($rel.id))"
     }
