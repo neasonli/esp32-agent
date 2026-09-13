@@ -63,6 +63,7 @@ $SkipSubPaths += 'lcode\desktop\resources\planner\dsh-home'
 # it is a build artifact produced from DSH sources + lcode/planner, so it never ships in git.
 $SkipSubPaths += 'lcode\desktop\resources\planner\apps'
 $SkipSubPaths += 'lcode\desktop\resources\planner\home'
+$SkipSubPaths += 'lcode\desktop\resources\planner\licenses'
 $SkipSubPaths += 'lcode\desktop\resources\esp-idf'
 # Installers / payloads / component archives must never be committed: GitHub rejects files
 # over 100 MB and the repo would balloon. They belong to GitHub Releases (see

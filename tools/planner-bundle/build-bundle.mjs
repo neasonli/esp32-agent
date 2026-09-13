@@ -208,6 +208,40 @@ if (missing.length > 0) {
   process.exit(1)
 }
 
+step('第三方法务文件（每个随包依赖的许可证）', () => {
+  const licDir = join(OUT, 'licenses')
+  mkdirSync(licDir, { recursive: true })
+  let copied = 0
+  // DSH 本体是 MIT：再分发必须带 LICENSE 与其第三方 notices（DSH 仓根自带这两份）。
+  for (const f of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
+    const src = join(DSH, f)
+    if (existsSync(src)) {
+      cpSync(src, join(licDir, `DSH-${f}`))
+      copied += 1
+    }
+  }
+  // MIT/BSD/ISC 都要求"随分发保留许可证原文"：把每个随包依赖自带的许可证文件一起收进来。
+  // 缺这份东西不影响运行，但属于分发合规红线，所以放在构建里自动做（别靠人记）。
+  const missing = []
+  for (const p of closure.packages) {
+    const dir = resolvePkgDir(p.name, p.dir)
+    if (dir === null) continue
+    let files
+    try { files = readdirSync(dir).filter((n) => /^(LICEN[CS]E|COPYING|NOTICE)/i.test(n)) } catch { continue }
+    if (files.length === 0) { missing.push(p.name); continue }
+    const dst = join(licDir, p.name.replace('/', '__'))
+    mkdirSync(dst, { recursive: true })
+    for (const f of files) {
+      cpSync(join(dir, f), join(dst, f))
+      copied += 1
+    }
+  }
+  console.log(`    收集 ${copied} 个许可证/notice 文件 -> licenses/`)
+  if (missing.length > 0) {
+    console.log(`    注意：${missing.length} 个包未自带许可证文件（多为 DSH 内部包，已由 DSH- LICENSE/NOTICES 覆盖）`)
+  }
+})
+
 console.log(`\n=== SIZE BREAKDOWN ===`)
 const groups = [
   ['DSH apps/cli (lib + config + package.json)', join(OUT, 'apps', 'cli')],
