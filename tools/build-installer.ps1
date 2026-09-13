@@ -266,7 +266,9 @@ if ($Variant -eq 'all') {
 # ---------------------------------------------------------------- 6. report
 Step '6/6 artifacts'
 if (-not (Test-Path $Dist)) { Fail "dist dir not found: $Dist" }
-$files = Get-ChildItem $Dist -File -Include '*.exe', '*.blockmap' -ErrorAction SilentlyContinue |
+# PowerShell 5.1: -Include only applies with -Recurse (or a wildcard path). Without it this
+# silently matched nothing and printed a misleading "no artifacts matched" (hit in practice).
+$files = Get-ChildItem -Path (Join-Path $Dist '*') -File -Include '*.exe', '*.blockmap' -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -notlike '*uninstaller*' } |
     Sort-Object Length -Descending
 if (-not $files) { Warn2 "no artifacts matched in $Dist" }
