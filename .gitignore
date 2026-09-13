@@ -1,0 +1,67 @@
+# ── 密钥与个人隐私（绝不提交）──────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+收款码/
+
+# ── 运行时数据 / 会话库 / 生成产物 ──────────────────────────────────────
+lcode/kernel/data/
+lcode/kernel/outputs/
+lcode/server/data/
+embedded_agent_stage1/data/
+embedded_agent_stage1/outputs/
+
+# ── 第三方版权材料（厂商手册/原理图、解包的第三方应用：只留本地）──────
+docs/ui-ref/
+lcode/kernel/assets/**/*.pdf
+embedded_agent_stage1/assets/**/*.pdf
+
+# ── 工具链与缓存 ───────────────────────────────────────────────────────
+.tools/go/
+.tools/gocache/
+.tools/prev_session.jsonl
+
+# ── 私有件（A+C 方案：授权/支付与私有知识库绝不进公开仓）──────────────
+_lcode-archive/
+private/
+lcode/kb-private/
+lcode/server/
+# 内部发布/闭源方案文档（含私有仓路径、归档支付渠道备注；想公开就删掉本行）
+docs/开源发布清单.md
+# 阶段1 原型目录：内含厂商 PDF、.env 与 1.7GB 虚拟环境；已迁往 _lcode-archive。
+# 若将来只想开源它的代码，删掉本行，保留上面的 assets/**/*.pdf 与 .env 规则即可。
+embedded_agent_stage1/
+
+# ── 依赖与构建产物 ─────────────────────────────────────────────────────
+node_modules/
+lcode/desktop/out/
+lcode/desktop/dist/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.tsbuildinfo
+lcode/planner/node_modules/
+lcode/server/data/
+
+# ── 打包产物（内核冻结件、electron-builder 中间目录）───────────────────
+# 只保留各目录的说明 README；真正的产物每台机器各自构建（PyInstaller 不能交叉编译）
+lcode/kernel/dist/
+lcode/kernel/build/
+lcode/desktop/resources/kernel/*
+!lcode/desktop/resources/kernel/README.md
+lcode/desktop/resources/planner/*
+!lcode/desktop/resources/planner/README.md
+# 随包 ESP-IDF 载荷（2.4 GB，由 tools/stage-esp-idf.py 从本机 IDF 裁剪生成，绝不进仓）
+lcode/desktop/resources/esp-idf/
+
+# ── 临时/草稿文件 ──────────────────────────────────────────────────────
+_tmp*.py
+_tmp*/
+_restore_sessions.py
+New 0.txt
+*.log
+.DS_Store
+Thumbs.db

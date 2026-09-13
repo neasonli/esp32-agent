@@ -1,0 +1,92 @@
+# LCode 三平台打包配置（electron-builder）
+#
+# 配套文档：docs/打包发布指南.md（含三平台铁律、体积预算、签名要求、CI 矩阵）
+#
+# 两个细节容易踩：
+#   1) 内核可执行文件名按平台不同（Windows 带 .exe，macOS/Linux 不带），
+#      KernelManager 已按 process.platform 解析；本文件用 extraResources 原样投放。
+#   2) extraResources 的 from 目录必须先存在（哪怕只有个 README），否则 electron-builder 直接报错。
+
+appId: com.lcode.firmware
+productName: LCode
+copyright: Copyright (c) 2026 neasonli
+
+directories:
+  output: dist
+  buildResources: build   # 图标放这里：icon.ico(win) / icon.icns(mac) / icon.png(linux, ≥512x512)
+
+files:
+  - out/**
+  - package.json
+
+asar: true
+
+# ── 随包资源（内核 = 必备；规划器运行时 = 可选，见指南 §3）────────────────
+extraResources:
+  # 由 lcode/kernel/scripts/build_kernel.py 产出，每个平台各自构建
+  - from: resources/kernel
+    to: kernel
+    filter:
+      - "**/*"
+      - "!README.md"
+  # 窗口图标：打包后 app.getAppPath() 指向 app.asar，找不到 build/ 下的图标，
+  # 必须随包带一份（否则窗口/任务栏回退到 Electron 默认图标，实测日志：
+  # "[window] 已创建，图标 = (未找到，将使用 Electron 默认图标)"）
+  - from: build/icon-256.png
+    to: icon-256.png
+  # 可选：DSH 规划器运行时（自包含闭包）。目录里只有 README 时等于不带规划器，
+  # 桌面端会走「精简模式」（内核自带对话 + 固件流水线）。
+  - from: resources/planner
+    to: planner
+    filter:
+      - "**/*"
+      - "!README.md"
+
+# ── Windows：安装包 exe + 免安装 exe ──────────────────────────────────────
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  # 未配置代码签名 → 用户首次运行会被 SmartScreen 拦（"更多信息 → 仍要运行"）。
+  # 正式发布建议买 OV/EV 证书后在此加 certificateFile / certificatePassword。
+  # 注意：artifactName 里不要写 JS 三元表达式（${ext == 'exe' ? ...} 会让 YAML 解析失败），
+  #       需要区分安装包/免安装版就按 target 各自命名。
+
+nsis:
+  artifactName: "${productName}-${version}-win-${arch}-setup.${ext}"
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: LCode
+  # 内核体积大（含 torch 时 1GB+），安装耗时较长属正常
+
+portable:
+  artifactName: "${productName}-${version}-win-${arch}-portable.${ext}"
+  # 免安装版：双击即用，适合给用户试装
+
+# ── macOS：dmg（双架构）───────────────────────────────────────────────────
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.developer-tools
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"
+  # 未签名/未公证：用户首次打开需「右键 → 打开」，或终端执行 xattr -cr /Applications/L-CODE.app
+  # 要正式分发：Apple Developer 账号($99/年) + 在 CI 里导入证书与公证凭据，然后把 identity 换成真值。
+  identity: null
+
+# ── Linux：AppImage（免安装）+ deb ───────────────────────────────────────
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  category: Development
+  maintainer: neasonli
+  artifactName: "${productName}-${version}-linux-${arch}.${ext}"
+  # AppImage 无需签名；deb 若进软件源才需 GPG 签名

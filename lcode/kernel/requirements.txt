@@ -1,0 +1,25 @@
+# ============================================================
+# 轻量内核依赖（通用模式）：公开仓 `pip install -r requirements.txt` 即可跑起来
+#
+# 「检索手册」能力需要私有知识库包（闭源，自带 torch/sentence-transformers 等重依赖）：
+#     pip install -e <私有仓 lcode-kb>      或    pip install <lcode-kb wheel>
+# 装上后内核日志显示 `[rag] 知识库后端: private`；没装则是 `stub`（通用模式，检索返回空）。
+# ============================================================
+
+# --- Agent 编排 ---
+langgraph>=0.2.60
+langgraph-checkpoint-sqlite>=1.0.0
+langchain>=0.3.0
+
+# --- LLM 适配（OpenAI 兼容端点：DeepSeek / Ollama / 通义 / OpenAI）---
+openai>=1.30.0
+
+# --- 服务 ---
+fastapi>=0.115.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9
+
+# --- 配置 ---
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+python-dotenv>=1.0.0

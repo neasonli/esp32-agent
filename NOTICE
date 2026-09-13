@@ -1,0 +1,23 @@
+L-CODE
+Copyright (c) 2026 neasonli (L-CODE)
+
+本产品包含/参考了第三方开源软件，特此声明：
+
+1) DeepSeek Harness（DSH）
+   - 来源：DeepSeek（https://github.com/deepseek-ai ，本地检出 deepseek/deepseek-harness-master）
+   - 许可：MIT License，Copyright (c) 2026 DeepSeek
+   - 使用方式：
+     * `lcode/planner` 通过 peerDependencies 依赖 `@deepseek-ai/dsh-*` 包，并在本机上以
+       junction/symlink 指向本地 DSH 检出（见 `lcode/planner/scripts/setup-profile.mjs`，
+       可用 `LCORE_DSH_REPO` 指定路径）；仓库本身**不再分发** DSH 源码。
+     * 桌面端 compositor 的部分交互语义（运行中 Enter=排队 / Ctrl+Enter=steer、`/plan` 命令、
+       消息流 block 呈现等）按 DSH 的公开实现语义适配到 L-CODE（自研实现，非逐行复制）。
+   - MIT 许可原文：见 `third_party/DSH-LICENSE`。
+
+2) 其他依赖
+   - 前端/桌面：Electron、React、Tailwind CSS、Zustand、electron-vite 等（各自许可见其包内 LICENSE）。
+   - 内核：FastAPI、LangGraph、LangChain、sentence-transformers、PyTorch 等（各自许可见其包内 LICENSE）。
+     向量检索使用自研 numpy 实现（`lcode/kernel/rag/vector_store.py`），不依赖 Chroma。
+
+注意：仓库**不包含**任何厂商手册/原理图（如 Espressif、Goertek、TDK 的 PDF），
+这些材料版权归各自厂商所有，仅在使用者本机按需提供。

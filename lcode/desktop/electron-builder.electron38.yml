@@ -1,0 +1,5 @@
+# 临时验证配置：用 Electron 38 的 dist 打包（不改 devDependencies，避免动到用户正在运行的实例）。
+# 只用于"随包规划器 + Electron 38"这条链路的验证；正式发布请把 devDependencies 的 electron 升到 38.x。
+extends: ./electron-builder.yml
+electronVersion: 38.8.6
+electronDist: D:\1_ai_project\_planner_bundle_test\electron38\node_modules\electron\dist

@@ -1,0 +1,133 @@
+# 三平台安装包构建（Windows exe / macOS dmg / Linux AppImage+deb）
+#
+# 为什么必须在 CI 上做：内核用 PyInstaller 打包，而它**不能交叉编译**
+# （把当前 OS 的 Python 运行时打进产物），所以每个平台都要在自己的 runner 上各自构建。
+# 详见 docs/打包发布指南.md。
+#
+# 本 workflow 构建的是「公开仓版本」（不含私有知识库 lcode-kb → 内核走通用模式 stub）。
+# 带知识库的正式版请在你本机/私有 CI 上构建（把私有包 pip install 进内核 venv 后去掉 --no-kb）。
+
+name: build-installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    # 建 Release / 传附件需要写权限：仓库「Settings → Actions → General → Workflow permissions」
+    # 若设成 read-only，这里必须显式声明，否则 gh release create 会 403。
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x64
+            builder_args: --win
+          - os: macos-14
+            label: macos-arm64
+            builder_args: --mac --arm64
+          - os: ubuntu-22.04
+            label: linux-x64
+            builder_args: --linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: lcode/desktop/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # ── 内核：只装轻量依赖（torch 等重依赖属于私有知识库包，不在公开仓）──
+      - name: Install kernel deps (light)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r lcode/kernel/requirements.txt pyinstaller
+
+      # ── 内核：在本平台构建可执行文件（产物进 lcode/desktop/resources/kernel）──
+      - name: Build kernel binary
+        run: python lcode/kernel/scripts/build_kernel.py --no-kb
+
+      - name: Show kernel artifact size
+        shell: bash
+        run: du -sh lcode/desktop/resources/kernel || true
+
+      - name: Install desktop deps
+        working-directory: lcode/desktop
+        run: npm ci
+
+      - name: Typecheck desktop
+        working-directory: lcode/desktop
+        run: npm run typecheck
+
+      # ── Linux 打包 AppImage/deb 需要的系统工具 ──
+      - name: Extra system deps (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools rpm
+
+      # ── 壳 + 安装包（预先 electron-vite build，再 electron-builder 出包）──
+      - name: Build installers
+        working-directory: lcode/desktop
+        # --publish never：只出本地产物，不自动发布（发布走 Release 手工或单独 workflow）
+        run: npx electron-vite build && npx electron-builder ${{ matrix.builder_args }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # macOS 无证书时别去找钥匙串身份
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcode-installers-${{ matrix.label }}
+          path: |
+            lcode/desktop/dist/*.exe
+            lcode/desktop/dist/*.dmg
+            lcode/desktop/dist/*.AppImage
+            lcode/desktop/dist/*.deb
+          if-no-files-found: error
+
+      # ── 发布到 GitHub Release（仅打 tag 时）────────────────────────────
+      # 为什么用 Release 而不是 Actions artifact：artifact 需要登录才能下载、90 天过期，
+      # 终端用户拿不到；Release 附件对所有人可下载、不过期（单文件上限 2 GiB）。
+      # 又为什么不把安装包提交进 git：GitHub 单文件硬上限 100 MB，仓库会被撑爆。
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          echo "publishing $TAG"
+          # 先确保 Release 存在（已存在则复用，不覆盖已有附件）。
+          # 三个矩阵 job 是并行的，create 可能互相撞车（409 already_exists）→ 撞了就当自己输，
+          # 只要随后 view 得通就继续；真不通才失败。
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "LCode $TAG" --generate-notes || true
+            gh release view "$TAG" >/dev/null 2>&1 || { echo "failed to ensure release $TAG"; exit 1; }
+          fi
+          shopt -s nullglob
+          assets=()
+          for f in lcode/desktop/dist/*.exe lcode/desktop/dist/*.dmg \
+                   lcode/desktop/dist/*.AppImage lcode/desktop/dist/*.deb; do
+            # 排除 electron-builder 的卸载器/调试文件；只挂真正能给用户的安装包
+            case "$(basename "$f")" in
+              *uninstaller*) continue ;;
+            esac
+            assets+=("$f")
+          done
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "no installer assets found"; exit 1
+          fi
+          printf 'uploading: %s\n' "${assets[@]}"
+          gh release upload "$TAG" "${assets[@]}" --clobber
+          echo "done: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+

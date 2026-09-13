@@ -1,0 +1,509 @@
+## 文档说明
+
+文档版本：V1.1
+适用阶段：阶段 1 0-1 业务闭环原型开发
+开发目标：**只做业务逻辑闭环，不做 GUI、不做打包、不做并发优化、不做授权收费**
+最终能力：用户输入嵌入式产品需求 → 自动芯片选型 → 检索芯片手册 → 生成适配固件代码 → 交叉编译 → 自动解析报错 → 智能修复代码 → 输出可编译通过的工程代码
+
+技术核心：Python + LangGraph + LangChain RAG + FastAPI
+
+### 版本更新记录
+
+| 版本 | 日期 | 更新内容 |
+|---|---|---|
+| V1.0 | - | 初版 |
+| V1.1 | 2026-08-26 | ① 锁定首批目标芯片 ESP32-S3 与 ESP-IDF 工具链；② 锁定 RAG Embedding 模型 bge-small-zh-v1.5；③ 定义任务存储与执行模型（SQLite + BackgroundTasks）；④ 明确代码输出为多文件 ESP-IDF 工程契约；⑤ 确认 RTOS 支持（ESP-IDF 内建 FreeRTOS）；⑥ 修正 4.3 分支路由与路线规划文档的矛盾（统一回 RAG 节点）；⑦ 补充错误分类正则规则、环境就绪检查、冒烟用例集、里程碑拆分、依赖版本锁定 |
+
+---
+
+## 一、阶段 1 核心定位与边界
+
+### 1.1 核心目标
+
+快速验证**嵌入式固件全自动开发业务闭环**，搭建稳定、可迭代的 Agent 核心工作流，为后续客户端封装、架构升级、PCB 扩展打下基础。
+
+### 1.2 本阶段只做
+
+1. 完整业务状态机流转（芯片选型→代码生成→编译→报错修复闭环）
+2. 芯片 Datasheet RAG 知识库检索，压制模型幻觉
+3. 嵌入式 GCC 交叉编译调用（通过 ESP-IDF `idf.py build` 包装）、日志结构化解析
+4. 编译错误分类、自动分支修复逻辑
+5. 统一 LLM 适配器（支持任意 OpenAI 格式模型切换）
+6. 极简后端 API，支持任务提交、任务查询、结果返回
+
+### 1.3 本阶段坚决不做
+
+1. 不开发任何桌面 GUI、网页前端
+2. 不做 SSE 流式、高并发、多任务调度
+3. 不做 EXE 打包、加密、授权、收费弹窗
+4. 不接入 PCB、EDA、BOM、工艺相关能力
+5. 不做断点续跑、全链路中断、工具并行调度
+6. 不引入 Go、DeepSeek-Harness、混合架构
+
+---
+
+## 二、整体技术栈明细
+
+### 2.1 核心框架
+
+- Agent 编排：`LangGraph`（状态机、节点分支、工作流调度）
+- LLM 调用：统一自定义适配器（兼容 DeepSeek、GPT、Ollama、通义千问），基于 OpenAI 兼容 SDK
+- RAG 知识库：`LangChain` 全套生态 + `ChromaDB` 本地向量库
+- Embedding：`sentence-transformers` 加载开源模型（默认 `BAAI/bge-small-zh-v1.5`）
+- 后端服务：`FastAPI`（轻量接口，仅用于任务提交）
+- 任务存储：`SQLite`（stdlib `sqlite3`，嵌入式文件库，非中间件）
+
+### 2.2 功能依赖库
+
+- 文档处理：`langchain-community、pypdf、unstructured`
+- 向量检索：`chromadb` + `langchain-chroma`（本地轻量向量库，无需部署服务）
+- 向量存储（V1.1 实测修订）：chromadb 1.5.x 与 numpy 2.x ABI 不兼容（collection.add/query 段错误 0xC0000005），MVP 改用**纯 numpy 余弦向量库**（`rag/vector_store.py`，零额外依赖，数据存 `data/rag_store/`，接口与 chromadb 对齐）；网络恢复后降级 numpy==1.26.4 可切回 chromadb
+- Embedding 集成：`langchain-huggingface`（HuggingFaceEmbeddings 封装 sentence-transformers）
+- LLM 调用：`openai`（OpenAI 格式 SDK，自定义 base_url 适配各家模型）
+- 编译调用：原生 `subprocess` 包装 `idf.py build`
+- 日志解析：`re` 正则、文本结构化处理
+- 数据校验：`pydantic` + `pydantic-settings`（参数 Schema 强校验 + .env 配置）
+- 状态持久化：`langgraph-checkpoint-sqlite`（图状态落盘到同一 SQLite 文件）
+- 异步支持：`asyncio`
+
+### 2.3 运行环境
+
+- 编程语言：Python3.10+
+- 运行系统：Windows / Linux 均可
+- 无第三方中间件依赖（纯本地运行；SQLite/ChromaDB 均为嵌入式文件存储）
+
+### 2.4 首批目标芯片与工具链（V1.1 锁定）
+
+- **首批唯一目标芯片：ESP32-S3**（Xtensa LX7 双核 240MHz，非 RISC-V）
+- **目标开发板：ESP32-S3-DevKitC-1 / 合宙 ESP32-S3（WROOM-1 模组）**
+- **工具链：ESP-IDF v5.x**（内置 `xtensa-esp32-elf-gcc`，构建系统为 CMake + Ninja）
+- **编译调用方式**：`subprocess` 调用 `idf.py -B build build`（非裸 gcc 命令）
+- **编译通过定义**：`idf.py build` 完整构建成功并产出 app 二进制（bootloader + partition table + app），**不需要真机烧录验证**
+- **环境成本**：ESP-IDF 安装约 2~3GB；首次完整构建 1~3 分钟，增量构建几十秒
+- **日志解析**：需兼容两类输出——CMake 配置错误 + 编译器错误
+- **RTOS 支持（V1.1 确认）**：ESP-IDF **内建双核 SMP 版 FreeRTOS**，`xTaskCreate` 等 API 开箱即用。代码生成模板默认采用 FreeRTOS 任务结构（`app_main` + 采集任务 + 上传任务）；裸机主循环作为模板参数备选。不引入 Zephyr（工具链不同，阶段 1 不做）
+
+### 2.5 环境就绪检查（启动时自动执行）
+
+`run.py` 启动前强制检查，任一失败给出明确中文报错并退出：
+
+1. Python 版本 >= 3.10
+2. `idf.py` 可用（PATH 中存在，或 `IDF_PATH` 环境变量指向 ESP-IDF 安装目录）
+3. ChromaDB 数据目录可写
+4. LLM 配置校验：`LLM_API_KEY` 为空时给出提示——本地 Ollama（base_url 指向 localhost）可留空，云端模型必须填写
+5. Embedding 模型检查：首次运行自动下载（HuggingFace/ModelScope 镜像可配置）
+
+---
+
+## 三、整体架构设计（阶段 1 最简架构）
+
+### 3.1 架构分层（三层极简）
+
+1. **API 接入层**：FastAPI 提供接口，接收用户需求、返回最终结果
+2. **Agent 调度层**：LangGraph 状态机，驱动全流程节点流转、分支判断、重试逻辑
+3. **能力工具层**：RAG 检索工具、芯片选型工具、代码生成工具、编译工具、错误修复工具
+
+### 3.2 核心运行流程
+
+用户需求输入
+→ 芯片选型（RAG 匹配需求最优芯片）
+→ Datasheet 精准检索（获取引脚、寄存器、外设、时序参数）
+→ 固件工程代码生成（适配芯片 + 开发板，输出多文件 ESP-IDF 工程）
+→ 调用 `idf.py build` 交叉编译
+→ 结构化解析编译日志、错误分类
+→ 分支自动修复（语法错误 / 配置错误 / 参数错误）
+→ 重新编译，直至编译成功（最多 5 次）
+→ 输出完整可运行固件工程
+
+---
+
+## 四、LangGraph 状态机详细设计
+
+### 4.1 全局 State 状态结构体（核心）
+
+所有节点共享、读写统一状态，保存全流程数据
+
+```python
+class AgentState(BaseModel):
+    task_id: str               # 任务ID（与 SQLite 任务表关联）
+    user_requirement: str      # 用户原始需求
+    chip_model: str            # 最终选型芯片型号
+    chip_datasheet_info: str   # RAG检索到的芯片关键资料
+    firmware_code: str         # 生成的完整固件代码（main.c）
+    project_dir: str           # 生成的 ESP-IDF 工程目录（多文件）
+    compile_log: str           # 原始编译日志
+    compile_error_type: str    # 错误分类：无错误/语法错误/配置错误/引脚冲突/环境错误
+    compile_success: bool      # 编译是否成功
+    retry_times: int           # 本轮修复重试次数（防死循环）
+    fix_history: list          # 已尝试的修复记录（防重复修复同一错误）
+    last_error: str            # 最近一次错误摘要
+    final_result: str          # 最终输出结果
+```
+
+### 4.2 五大核心执行节点
+
+1. **node_chip_select** 芯片选型节点
+   - 输入：用户产品需求
+   - 能力：结合本地芯片库（MVP 首批仅 ESP32-S3）+ RAG 检索，匹配适配 MCU
+   - 输出：确定唯一芯片型号
+2. **node_rag_search** 手册检索节点
+   - 输入：选型芯片型号
+   - 能力：检索对应 Datasheet，提取外设、引脚、寄存器、配置规则
+   - 输出：结构化芯片硬件参数
+3. **node_code_generate** 固件代码生成节点
+   - 输入：用户需求 + 芯片硬件资料
+   - 能力：从模板复制 ESP-IDF 工程，LLM 生成 `main.c` 并落盘
+   - 输出：完整工程目录（多文件契约见 5.6）
+4. **node_compile_build** 编译执行节点
+   - 输入：固件工程目录
+   - 能力：调用 `idf.py build` 交叉编译
+   - 输出：原始编译日志、编译成败状态
+5. **node_error_fix** 错误修复节点
+   - 输入：编译日志、错误类型
+   - 能力：分类错误，LLM 针对性生成修复后的 `main.c`
+   - 输出：修复后的新固件代码（交给代码生成节点落盘重编）
+
+### 4.3 条件分支路由规则（核心业务逻辑）
+
+1. 编译成功 → 结束任务，输出最终工程
+2. 编译失败：
+   - 语法错误 / 未定义标识符 / 类型不匹配 → 回到【代码生成节点】修复代码
+   - 引脚/外设冲突 → 回到【RAG检索节点】重新核对硬件参数再生成代码
+   - 环境/临时错误 → 本地重试编译（直接回编译节点，不消耗修复次数）
+3. 最大重试次数限制：单任务最多重试 5 次，防止死循环；超限 → 终止任务并输出错误总结
+
+> **V1.1 修正说明**：与《路线规划》文档"引脚冲突返回芯片选型节点"的口径不一致，现统一为 **回 RAG 检索节点**（重新核对硬件参数成本更低、更精准；重新选型属极端兜底，阶段 1 不实现）。
+
+### 4.4 完整状态机流程图
+
+```
+用户需求
+→ 芯片选型
+→ 资料检索
+→ 代码生成
+→ 编译构建
+→ 条件判断
+├─ 成功 → 任务结束
+└─ 失败 → 错误分类修复
+   ├─ 环境错误 → 回编译节点重试（不计数）
+   ├─ 引脚冲突 → 回资料检索节点
+   └─ 语法/标识符/类型 → 回代码生成节点（修复计数+1）
+```
+
+### 4.5 重试计数规则
+
+- 仅"语法/标识符/类型"类修复循环消耗 `retry_times`
+- 环境类错误重试不消耗计数（最多连续 2 次，防止环境故障死循环）
+- `retry_times >= 5` → 路由到 END，`final_result` 输出错误总结报告
+
+---
+
+## 五、核心功能详细设计
+
+### 5.1 统一 LLM 适配器设计
+
+#### 功能目标
+
+用户可**任意切换 LLM**（DeepSeek、GPT4、Ollama 本地模型、通义千问），无需改代码。
+
+#### 设计规范
+
+1. 统一封装请求函数，基于 `openai` SDK 兼容所有 OpenAI 格式接口（自定义 base_url + api_key + model）
+2. 全局统一参数从 `.env` 读取：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`LLM_TEMPERATURE`
+3. 所有 Agent 节点统一调用该适配器，无硬编码模型
+4. LLM 调用失败自动重试 2 次（网络超时、API 错误），仍失败则终止任务并提示
+
+#### 支持模型
+
+- 云端：DeepSeek、OpenAI、阿里通义、讯飞星火（均为 OpenAI 兼容端点）
+- 本地：Ollama 全系本地大模型（base_url 指向 `http://localhost:11434/v1`）
+
+#### 配置项（.env）
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| LLM_BASE_URL | https://api.deepseek.com/v1 | OpenAI 兼容端点 |
+| LLM_API_KEY | 空 | 云端必填；Ollama 可留空 |
+| LLM_MODEL | deepseek-chat | 模型名 |
+| LLM_TEMPERATURE | 0.2 | 代码生成建议低温 |
+
+### 5.2 嵌入式 RAG 知识库设计
+
+#### Embedding 模型（V1.1 锁定）
+
+- **默认：`BAAI/bge-small-zh-v1.5`**（24M 参数 / 512 维 / ~95MB / 中英双语 / CPU 推理快）
+- 升级备选：`BAAI/bge-m3`（568M / 1024 维 / 多语言，英文 Datasheet 占比高时切换）、`Qwen/Qwen3-Embedding-0.6B`
+- 下载渠道：HuggingFace（`huggingface.co`）或 ModelScope 魔搭（`modelscope.cn`，国内直连快），通过 `sentence-transformers` 自动下载
+- 国内加速：`.env` 配置 `HF_ENDPOINT=https://hf-mirror.com`（默认已启用，settings.py 在导入 huggingface 库前自动设置）
+- **注意**：ChromaDB 默认 `all-MiniLM-L6-v2` 为纯英文模型，**必须替换为上述自定义模型**；不同模型维度不同，**切换模型需重建向量库 collection**
+- 集成方式：`langchain-huggingface` 的 `HuggingFaceEmbeddings` + `langchain-chroma` 的 Chroma
+
+#### 知识库内容（首批数据清单）
+
+1. ESP32-S3 Datasheet（英文原版）与中文简介
+2. ESP32-S3 技术参考手册（引脚功能、外设、寄存器）
+3. ESP-IDF FreeRTOS 开发规范 / 官方例程（UART、GPIO、I2C）
+4. ESP32-S3-DevKitC-1 / 合宙开发板适配规则
+5. 嵌入式通用开发规范、工程模板
+
+> 开发前需人工准备：上述 PDF/Markdown 放入 `assets/` 目录，运行 `python -m rag.load_docs` 一键切片入库。
+
+#### 处理流程
+
+1. 文档加载：PDF/Markdown 开发手册批量导入（pypdf / unstructured）
+2. 文本切片：按章节、功能、硬件参数智能切片（chunk_size=800 / overlap=120）
+3. 向量化入库：本地 ChromaDB 存储，metadata 记录 `chip`（用于按芯片过滤）
+4. 检索规则：根据选型芯片 + 需求关键词精准召回 top5 相关文档片段（metadata 过滤 chip）
+5. 上下文注入：将检索资料强制带入 LLM prompt，杜绝幻觉
+
+### 5.3 编译错误分类体系（阶段 1 核心稳定性保障）
+
+人工定义**嵌入式编译高频错误**正则规则，实现精准分支：
+
+| 错误类型 | 典型特征（正则关键字） | 修复动作 | 路由 |
+|---|---|---|---|
+| 语法错误 | `expected ';'`、`expected ')'`、`stray '\'`、`expected identifier before` | LLM 修复代码 | 回代码生成 |
+| 未定义标识符 | `undeclared`、`not declared`、`undefined reference to`、`implicit declaration` | 补头文件/变量声明 | 回代码生成 |
+| 引脚/外设冲突 | `GPIO.*already`、`pin.*conflict`、`ESP_ERR_INVALID_ARG` 等配置失败 | 重新核对引脚手册 | 回 RAG 检索 |
+| 类型不匹配 | `incompatible types`、`conflicting types`、`expected 'int' but argument` | 修正传参/类型 | 回代码生成 |
+| 环境临时错误 | `command not found`、`Permission denied`、`No such file`、CMake 配置失败、缓存冲突 | 清理重试编译 | 回编译节点（不计数） |
+| 未知错误 | 无法匹配上述规则 | LLM 分析 + 修复 | 回代码生成 |
+
+解析产出：`ErrorInfo(type, message, file, line, raw_line)`，首个致命错误优先，供 LLM 精准修复。
+
+### 5.4 防死循环机制
+
+1. 全局重试计数器（`retry_times`）
+2. 单任务最大重试 5 次（仅修复类循环计数）
+3. `fix_history` 记录每次修复摘要，LLM 修复时注入历史，避免重复修复同一错误
+4. 超过阈值直接终止任务，返回错误报告
+
+### 5.5 任务存储与执行模型（V1.1 新增）
+
+#### 存储方案：SQLite（零中间件）
+
+- SQLite 为嵌入式文件库，**不是中间件**，符合"无第三方中间件依赖"约束
+- 数据库文件：`data/tasks.db`，表 `tasks`：
+
+```sql
+CREATE TABLE tasks (
+    task_id        TEXT PRIMARY KEY,
+    user_requirement TEXT NOT NULL,
+    status         TEXT NOT NULL,      -- PENDING / RUNNING / SUCCESS / FAILED / INTERRUPTED
+    chip_model     TEXT,
+    project_dir    TEXT,
+    result_json    TEXT,               -- 最终结果（代码路径、编译日志摘要、错误总结）
+    error_msg      TEXT,
+    created_at     TEXT,
+    updated_at     TEXT
+);
+```
+
+- LangGraph 状态持久化：`langgraph-checkpoint-sqlite` 写入同一 `tasks.db` 的 checkpoint 表，图状态（编译日志、重试次数、修复历史）可追溯
+
+#### 执行模型：FastAPI BackgroundTasks（进程内串行）
+
+1. `POST /api/run_task` → 校验参数 → 入库（PENDING）→ `BackgroundTasks` 注册后台执行 → 立即返回 task_id
+2. 后台线程执行 LangGraph 图（单 worker 串行，符合"不做并发"边界）
+3. 执行期间更新状态（RUNNING），结束写入 SUCCESS/FAILED + result_json
+4. `GET /api/get_result?task_id=xxx` → 读库返回任务状态与结果（前端轮询即可）
+5. **重启恢复**：服务启动时扫描所有 RUNNING 任务 → 置为 INTERRUPTED（状态机本身有 checkpoint，阶段 1 不做断点续跑）
+
+#### 开源替代方案（阶段 1 不采用，供阶段 2 参考）
+
+`arq` / `RQ` / `dramatiq` / `Celery` 均需 Redis 等中间件，违背零中间件原则。阶段 2 由 Tauri 网关轮询 Python 内核 HTTP 接口，当前 SQLite 方案可直接对接。
+
+### 5.6 代码生成输出契约（V1.1 新增：多文件工程）
+
+代码生成节点输出**完整 ESP-IDF 工程**，落盘至 `outputs/{task_id}/`：
+
+```
+outputs/{task_id}/
+├── CMakeLists.txt          # 工程根构建文件
+├── sdkconfig.defaults      # 芯片/外设默认配置
+├── main/
+│   ├── CMakeLists.txt
+│   ├── main.c              # LLM 生成的业务固件代码（FreeRTOS 任务结构）
+│   └── idf_component.yml   # 组件依赖（可选）
+└── README.md               # 编译/烧录说明
+```
+
+- 生成方式：从 `templates/esp32s3_basic/` 复制模板 → LLM 生成 `main.c` 覆盖 → 写 README
+- 修复动作：修改 `main.c` / `CMakeLists.txt` / `sdkconfig.defaults` 后重新 `idf.py build`
+- 修复重入：`code_generate` 幂等——若 state 已有 `firmware_code`（修复轮），直接落盘跳过重新生成
+
+### 5.7 冒烟验收用例集（V1.1 新增）
+
+| # | 输入需求 | 预期：选型 | 预期：代码/编译 |
+|---|---|---|---|
+| 1 | 实现 ESP32-S3 LED 闪烁功能 | esp32s3 | 生成 FreeRTOS 任务工程，`idf.py build` 编译通过 |
+| 2 | 实现 ESP32-S3 温湿度采集并通过串口上传（AHT20 + UART） | esp32s3 | 生成 I2C 采集任务 + UART 上传任务，编译通过 |
+| 3 | 故意注入一个语法错误（如缺失分号）验证修复闭环 | esp32s3 | 首次编译失败 → 错误分类 → 自动修复 → 最终编译通过 |
+
+> 阶段 1 验收口径：**只验证编译通过，不验证烧录后的功能正确性**（"无严重幻觉"仅以代码可编译 + 引用 RAG 资料一致性判定）。
+
+---
+
+## 六、项目目录结构（标准化可直接落地）
+
+```
+embedded_agent_stage1/
+├── config/
+│   ├── settings.py          # 全局配置（pydantic-settings 加载 .env）
+│   └── llm_config.py        # 全局LLM配置、统一适配器
+├── agent/
+│   ├── state.py             # Agent全局状态定义
+│   ├── graph.py             # LangGraph状态机、节点注册、路由
+│   └── nodes/               # 所有业务节点
+│       ├── chip_select.py
+│       ├── rag_search.py
+│       ├── code_generate.py
+│       ├── compile_build.py
+│       └── error_fix.py
+├── rag/
+│   ├── load_docs.py         # 文档加载入库（python -m rag.load_docs 执行）
+│   └── retriever.py         # 检索工具封装
+├── tools/
+│   ├── compile_tool.py      # idf.py 编译工具封装
+│   └── error_parse.py       # 日志解析、错误分类
+├── db/
+│   └── task_store.py        # SQLite 任务存储
+├── api/
+│   └── main.py              # FastAPI接口入口
+├── templates/
+│   └── esp32s3_basic/       # ESP-IDF 工程模板（FreeRTOS）
+├── assets/                  # 本地芯片手册知识库（人工准备 PDF/MD）
+├── data/                    # 运行时生成：tasks.db、chroma/、outputs/
+├── outputs/                 # 生成任务输出工程
+├── .env.example
+├── requirements.txt
+├── run.py                   # 项目启动入口（含环境就绪检查）
+└── README.md
+```
+
+---
+
+## 七、API 接口设计（极简 2 个接口）
+
+### 7.1 提交开发任务
+
+- 请求方式：POST
+- 地址：`/api/run_task`
+- 请求体：
+```json
+{
+    "user_requirement": "实现ESP32-S3温湿度采集串口上传功能"
+}
+```
+- 返回（同步返回，任务后台执行）：
+```json
+{
+    "task_id": "c7f8...",
+    "status": "PENDING"
+}
+```
+
+### 7.2 查询任务结果
+
+- 请求方式：GET
+- 地址：`/api/get_result?task_id=xxx`
+- 返回：任务状态（PENDING/RUNNING/SUCCESS/FAILED）、流程日志、编译结果、最终固件工程路径
+- 任务不存在返回 404
+
+### 7.3 健康检查
+
+- `GET /api/health`：返回服务状态 + 环境检查结果（LLM 配置、idf.py、embedding 模型）
+
+---
+
+## 八、异常处理规范
+
+1. **LLM 调用异常**：网络超时、API 错误 → 自动重试 2 次，仍失败终止任务并提示
+2. **编译工具异常**：idf.py 未配置、路径错误 → 直接报错终止（环境就绪检查可前置拦截）
+3. **RAG 检索异常**：无匹配芯片资料 → 提示无适配芯片，终止任务
+4. **循环超限异常**：重试 5 次未修复 → 输出错误总结，终止任务
+5. **任务状态异常**：查询不存在的 task_id → 404；服务重启残留 RUNNING → 标记 INTERRUPTED
+
+---
+
+## 九、依赖清单 requirements.txt
+
+```
+langgraph>=0.2.60
+langgraph-checkpoint-sqlite>=1.0.0
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-chroma>=0.1.4
+langchain-huggingface>=0.1.2
+sentence-transformers>=3.0.0
+torch==2.6.0
+chromadb>=0.5.0
+openai>=1.30.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pypdf>=5.0.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.0
+```
+
+> 版本锁定说明：langchain 0.3 起模块拆分，`langchain-community` 与 `langchain-chroma` 必须独立安装；**torch 固定 2.6.0**（实测 2.13.0 在 Windows 10 22H2 上 c10.dll 加载失败 WinError 1114）；如遇 chromadb/pydantic 兼容问题，锁定已验证组合（记录于 README）。
+
+---
+
+## 十、阶段 1 开发完成标准（验收标准）
+
+满足以下所有条件即代表阶段 1 闭环完成：
+
+1. 输入任意简单嵌入式需求（首批面向 ESP32-S3），可自动完成芯片选型
+2. 自动检索对应芯片手册参数（bge-small-zh-v1.5 向量检索）
+3. 生成可编译的 ESP-IDF 多文件工程（FreeRTOS 任务结构）
+4. 自动调用 `idf.py build` 编译、自动识别报错类型（正则规则分类）
+5. 自动对应分支修复代码（含 5.3 错误分类表全部分支）
+6. 最终输出**编译成功**的完整固件工程
+7. 可自由切换本地 / 云端任意 LLM 模型（仅改 .env）
+8. 无死循环、无流程错乱、无严重幻觉
+9. 通过 5.7 冒烟验收用例集（含注入语法错误修复用例）
+10. 任务提交/查询接口可用，SQLite 任务状态全程可查
+
+---
+
+## 十一、阶段 1 可迭代预留设计
+
+为阶段 2 产品化预留扩展接口：
+
+1. 状态机完全解耦，后续可直接新增 PCB 节点
+2. LLM 适配器全局统一，后续 GUI 可直接复用
+3. 工具层独立封装，后续可加并行 / 串行调度
+4. 错误分类体系可无限扩充（正则规则表化）
+5. SQLite 任务表与 LangGraph checkpoint 同库，阶段 2 断点续跑可直接启用
+6. 芯片库表化（`chip_model` → 工具链/模板/引脚库映射），新增芯片只需加模板 + 资料
+
+---
+
+## 十二、阶段 1 禁止修改原则
+
+1. 不改动 LangGraph 状态机核心架构
+2. 不新增客户端、并发、打包相关逻辑
+3. 不引入外部框架（Harness/Go）
+4. 所有优化只聚焦**业务闭环正确率**
+
+---
+
+## 十三、开发里程碑（V1.1 新增，单人/双人 1~3 周）
+
+| 周次 | 交付物 | 验收 |
+|---|---|---|
+| W1 | 环境搭建（Python/ESP-IDF）、`settings.py`、LLM 适配器、RAG 入库脚本 + 首批资料 | 冒烟用例 1 选型正确、RAG 能召回 ESP32-S3 引脚/外设片段 |
+| W2 | 状态机 + 5 节点 + 编译封装 + 错误解析 | 冒烟用例 1/2 端到端编译通过 |
+| W3 | 修复闭环、SQLite 任务 API、环境检查、冒烟用例 3、联调打磨 | 全部验收标准通过 |
+
+---
+
+## 十四、开发前置准备清单（开工前）
+
+1. 安装 Python 3.10+ 与 ESP-IDF v5.x（含 xtensa-esp32-elf-gcc 工具链）
+2. 准备首批知识库资料（ESP32-S3 Datasheet / 技术参考手册 / 开发板资料）放入 `assets/`
+3. 准备 LLM 配置：云端 key 或本机 Ollama（`LLM_BASE_URL` 指向本地）
+4. 首次运行前执行 `pip install -r requirements.txt` + `python -m rag.load_docs` 建库

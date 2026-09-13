@@ -1,0 +1,10 @@
+# @lcode/planner bundle patch —— L-CODE 规划器装配（agent核心开发文档 §1.2 裁剪清单的落地）。
+#
+# 本 bundle 只插入一个自研插件行 `@lcode/planner`，由它在 apply 中程序化装配全部
+# 核心服务与自有插件（与 @deepseek-ai/dsh-agent-spine-demo 同构，见 src/index.ts）。
+# 裁剪原则（v1 不装配）：subagent / workflow / ralph / plan-mode / sandbox /
+# web / tool-web / terminal / pty / e2b / bash / subprocess / todo / telemetry。
+- insert:
+    - id: lcode-planner
+      name: '@lcode/planner'
+      config: {}

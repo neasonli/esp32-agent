@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* shadcn 风格设计令牌（浅色） */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    /* 主操作蓝（参照 DSH InputBar .primary 的 #3964FE 业务蓝，非品牌墨色） */
+    --info: 226 100% 61%;
+    --info-hover: 226 100% 70%;
+    --info-foreground: 0 0% 100%;
+    /* WorkBuddy 权限·完全访问危险红（permission full-access：#E54747 on / #F64041 error 系） */
+    --perm-full: 0 76% 59%;
+    --perm-soft: 0 92% 96%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 10% 3.9%;
+    --radius: 0.5rem;
+    /* 输入条胶囊圆角（参照 DSH composer card 22px；独立 token，不改默认 xl=12px） */
+    --radius-capsule: 22px;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family:
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      'PingFang SC',
+      'Microsoft YaHei',
+      sans-serif;
+  }
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.3);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 等宽字体用于日志/代码 */
+.font-mono {
+  font-family: 'Cascadia Code', Consolas, 'Courier New', monospace;
+}
+
+/* 语法高亮（W2 补全，浅色主题，VS Code Light 系配色） */
+.tok-kw {
+  color: #0000ff;
+}
+.tok-str {
+  color: #a31515;
+}
+.tok-num {
+  color: #098658;
+}
+.tok-com {
+  color: #008000;
+}
+.tok-pre {
+  color: #795e26;
+}

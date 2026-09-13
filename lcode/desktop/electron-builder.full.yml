@@ -1,0 +1,36 @@
+# LCode 打包配置 · **带 ESP-IDF 版**（用户机没有 ESP-IDF 环境时下载这个）
+#
+# 用法：
+#   npx electron-builder --win --config electron-builder.full.yml
+#   （不带 IDF 的版本用默认配置：npx electron-builder --win）
+#
+# 前置：先跑 `python tools/stage-esp-idf.py --src D:\esp` 生成 resources/esp-idf/（约 2.4 GB）。
+# 该目录不进 git、不进公开仓（见 .gitignore 与 tools/make-public-export.ps1）。
+
+extends: ./electron-builder.yml
+
+# 注意：这里**只**列 esp-idf 载荷归档，依赖 extends 的数组"相加"语义拿到父配置的 kernel/planner/图标。
+# 实测踩坑：在子配置里重列父配置的资源，electron-builder 会把同一目录复制两次
+# （并行 worker 抢同一个目标文件）→ 失败：
+#   EBUSY: resource busy or locked, copyfile '...\resources\kernel\lcode-kernel.exe' -> '...'
+#
+# 为什么装的是**归档**而不是解压后的目录（2.4 GB）：
+# NSIS 数据块上限 2 GiB，直接装 2.4 GB 目录时安装包能打出来、但**安装时崩溃**
+# （exit 0xC0000005，一个文件都装不进去）。742 MB 的归档未压缩数据 < 2 GiB ✓，
+# 首次运行时由应用解压到 %APPDATA%\LCode\components\esp-idf（见 main/components.ts）。
+extraResources:
+  - from: resources/esp-idf-payload.zip
+    to: esp-idf-payload.zip
+
+# 产物名加 -full 后缀，和"不带 IDF"的版本区分开
+nsis:
+  artifactName: "${productName}-${version}-win-${arch}-setup-full.${ext}"
+
+portable:
+  artifactName: "${productName}-${version}-win-${arch}-portable-full.${ext}"
+
+mac:
+  artifactName: "${productName}-${version}-mac-${arch}-full.${ext}"
+
+linux:
+  artifactName: "${productName}-${version}-linux-${arch}-full.${ext}"
